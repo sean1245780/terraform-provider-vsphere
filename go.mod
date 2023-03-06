@@ -10,10 +10,6 @@ require (
 )
 
 require (
-<<<<<<< HEAD
-	github.com/rogpeppe/go-internal v1.8.1 // indirect
-	google.golang.org/genproto v0.0.0-20200904004341-0bd0a958aa1d // indirect
-=======
 	github.com/agext/levenshtein v1.2.2 // indirect
 	github.com/apparentlymart/go-textseg/v13 v13.0.0 // indirect
 	github.com/fatih/color v1.13.0 // indirect
@@ -59,5 +55,4 @@ require (
 	google.golang.org/genproto v0.0.0-20200904004341-0bd0a958aa1d // indirect
 	google.golang.org/grpc v1.51.0 // indirect
 	google.golang.org/protobuf v1.28.1 // indirect
->>>>>>> c8fcd694347b18ade6609dac1349735f3f31e999
 )
