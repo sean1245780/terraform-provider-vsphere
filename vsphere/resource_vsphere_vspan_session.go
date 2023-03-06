@@ -342,6 +342,12 @@ func resourceVSphereVspanSession() *schema.Resource {
 		Importer: &schema.ResourceImporter{
 			State: resourceVSphereComputeClusterVMHostRuleImport,
 		},
+		StateUpgraders: []schema.StateUpgrader{{
+			Version: 0,
+			Type:    resourceVSphereContentLibraryItemResourceV0().CoreConfigSchema().ImpliedType(),
+			Upgrade: resourceVSphereContentLibraryItemUpgradeV0,
+		}},
+		SchemaVersion: 1,
 
 		Schema: map[string]*schema.Schema{
 			"name": {
@@ -356,7 +362,9 @@ func resourceVSphereVspanSession() *schema.Resource {
 			},
 			"key": {
 				Type:        schema.TypeString,
+				Computed:	 true,
 				Optional:    true,
+				ForceNew:    true,
 				Description: "The generated key as the identifier for the session.",
 			},
 			"mirrored_packet_length": {
@@ -373,17 +381,69 @@ func resourceVSphereVspanSession() *schema.Resource {
 			},
 			"enabled": {
 				Type:        schema.TypeBool,
-				Optional:    true,
-				Default:     true,
+				Required:    true,
 				Description: "Enable this rule in the cluster.",
 			},
-			"mandatory": {
+			"strip_original_vlan": {
+				Type:        schema.TypeBool,
+				Required:    true,
+				Description: "Whether to strip the original VLAN tag. if false, the original VLAN tag will be preserved on the mirrored traffic. If encapsulationVlanId has been set and this property is false, the frames will be double tagged with the original VLAN ID as the inner tag.",
+			},
+			"normal_traffic_allowed": {
+				Type:        schema.TypeBool,
+				Required:    true,
+				Description: "Whether or not destination ports can send and receive "normal" traffic. Setting this to false will make mirror ports be used solely for mirroring and not double as normal access ports.",
+			},
+			"destination_port": {
 				Type:        schema.TypeBool,
 				Optional:    true,
-				Description: "When true, prevents any virtual machine operations that may violate this rule.",
+				Description: "Destination ports that received the mirrored packets. You cannot use wild card ports as destination ports. If wildcardPortConnecteeType is set in the value, the reconfigure operation will raise a fault. Also any port designated in the value of this property can not match the wild card source port in any of the Distributed Port Mirroring session.",
+			},
+			"source_port_received": {
+				Type:        schema.TypeBool,
+				Optional:    true,
+				Description: "Source ports for which received packets are mirrored.",
+			},
+			"source_port_transmitted": {
+				Type:        schema.TypeBool,
+				Optional:    true,
+				Description: "Source ports for which transmitted packets are mirrored."
+			},
+			"sampling_rate": {
+				Type:        schema.TypeInt,
+				Optional:    true,
+				Default:     1,
+				Description: "Sampling rate of the session. If its value is n, one of every n packets is mirrored. Valid values are between 1 to 65535, and default value is 1."
+				ValidateFunc: validation.IntBetween(1, 65535),
+			},
+			"session_type": {
+				Type:        schema.TypeString,
+				Optional:    true,
+				Description: "Type of the session. See VMwareDVSVspanSessionType for valid values. Default value is mixedDestMirror if unspecified in a VSPAN create operation."
 			},
 		},
 	}
+}
+
+
+func resourceVSphereHostPortGroupCreate(d *schema.ResourceData, meta interface{}) error {
+	client := meta.(*Client).vimClient
+	name := d.Get("name").(string)
+	hsID := d.Get("host_system_id").(string)
+	ns, err := hostNetworkSystemFromHostSystemID(client, hsID)
+	if err != nil {
+		return fmt.Errorf("error loading network system: %s", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), defaultAPITimeout)
+	defer cancel()
+	spec := expandHostPortGroupSpec(d)
+	if err := ns.AddPortGroup(ctx, *spec); err != nil {
+		return fmt.Errorf("error adding port group: %s", err)
+	}
+
+	saveHostPortGroupID(d, hsID, name)
+	return resourceVSphereHostPortGroupRead(d, meta)
 }
 
 func resourceVSphereComputeClusterVMHostRuleCreate(d *schema.ResourceData, meta interface{}) error {
@@ -426,6 +486,42 @@ func resourceVSphereComputeClusterVMHostRuleCreate(d *schema.ResourceData, meta 
 
 	log.Printf("[DEBUG] %s: Create finished successfully", resourceVSphereComputeClusterVMHostRuleIDString(d))
 	return resourceVSphereComputeClusterVMHostRuleRead(d, meta)
+}
+
+
+func resourceVSphereHostPortGroupRead(d *schema.ResourceData, meta interface{}) error {
+	client := meta.(*Client).vimClient
+	hsID, name, err := portGroupIDsFromResourceID(d)
+	if err != nil {
+		return err
+	}
+	ns, err := hostNetworkSystemFromHostSystemID(client, hsID)
+	if err != nil {
+		return fmt.Errorf("error loading host network system: %s", err)
+	}
+
+	pg, err := hostPortGroupFromName(meta.(*Client).vimClient, ns, name)
+	if err != nil {
+		return fmt.Errorf("error fetching port group data: %s", err)
+	}
+
+	if err := flattenHostPortGroupSpec(d, &pg.Spec); err != nil {
+		return fmt.Errorf("error setting resource data: %s", err)
+	}
+
+	_ = d.Set("key", pg.Key)
+	cpm, err := calculateComputedPolicy(pg.ComputedPolicy)
+	if err != nil {
+		return err
+	}
+	if err := d.Set("computed_policy", cpm); err != nil {
+		return fmt.Errorf("error saving effective policy to state: %s", err)
+	}
+	if err := d.Set("ports", calculatePorts(pg.Port)); err != nil {
+		return fmt.Errorf("error setting port list: %s", err)
+	}
+
+	return nil
 }
 
 func resourceVSphereComputeClusterVMHostRuleRead(d *schema.ResourceData, meta interface{}) error {
